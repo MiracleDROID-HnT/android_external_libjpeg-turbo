@@ -1,5 +1,5 @@
 /*
- * Copyright (C)2009-2017 D. R. Commander.  All Rights Reserved.
+ * Copyright (C)2009-2016 D. R. Commander.  All Rights Reserved.
  *
  * Redistribution and use in source and binary forms, with or without
  * modification, are permitted provided that the following conditions are met:
@@ -40,13 +40,13 @@
 
 #define _throw(op, err) {  \
 	printf("ERROR in line %d while %s:\n%s\n", __LINE__, op, err);  \
-	retval=-1;  goto bailout;}
+  retval=-1;  goto bailout;}
 #define _throwunix(m) _throw(m, strerror(errno))
 #define _throwtj(m) _throw(m, tjGetErrorStr())
 #define _throwbmp(m) _throw(m, bmpgeterr())
 
 int flags=TJFLAG_NOREALLOC, componly=0, decomponly=0, doyuv=0, quiet=0,
-	dotile=0, pf=TJPF_BGR, yuvpad=1, dowrite=1;
+	dotile=0, pf=TJPF_BGR, yuvpad=1, warmup=1, dowrite=1;
 char *ext="ppm";
 const char *pixFormatStr[TJ_NUMPF]=
 {
@@ -64,7 +64,7 @@ const char *subName[TJ_NUMSAMP]={"444", "422", "420", "GRAY", "440", "411"};
 tjscalingfactor *scalingfactors=NULL, sf={1, 1};  int nsf=0;
 int xformop=TJXOP_NONE, xformopt=0;
 int (*customFilter)(short *, tjregion, tjregion, int, int, tjtransform *);
-double benchtime=5.0, warmup=1.0;
+double benchtime=5.0;
 
 
 char *formatName(int subsamp, int cs, char *buf)
@@ -146,7 +146,7 @@ int decomp(unsigned char *srcbuf, unsigned char **jpegbuf,
 	}
 
 	/* Benchmark */
-	iter=-1;
+	iter=-warmup;
 	elapsed=elapsedDecode=0.;
 	while(1)
 	{
@@ -176,16 +176,11 @@ int decomp(unsigned char *srcbuf, unsigned char **jpegbuf,
 						_throwtj("executing tjDecompress2()");
 			}
 		}
-		elapsed+=gettime()-start;
-		if(iter>=0)
+		iter++;
+		if(iter>=1)
 		{
-			iter++;
+			elapsed+=gettime()-start;
 			if(elapsed>=benchtime) break;
-		}
-		else if(elapsed>=warmup)
-		{
-			iter=0;
-			elapsed=elapsedDecode=0.;
 		}
 	}
 	if(doyuv) elapsed-=elapsedDecode;
@@ -212,7 +207,7 @@ int decomp(unsigned char *srcbuf, unsigned char **jpegbuf,
 			(double)(w*h)/1000000.*(double)iter/elapsed);
 		if(doyuv)
 		{
-			printf("YUV Decode    --> Frame rate:         %f fps\n",
+			printf("YUV Decode    --> Frame rate:         %f fps\n",
 				(double)iter/elapsedDecode);
 			printf("                  Throughput:         %f Megapixels/sec\n",
 				(double)(w*h)/1000000.*(double)iter/elapsedDecode);
@@ -345,7 +340,7 @@ int fullTest(unsigned char *srcbuf, int w, int h, int subsamp, int jpegqual,
 		}
 
 		/* Benchmark */
-		iter=-1;
+		iter=-warmup;
 		elapsed=elapsedEncode=0.;
 		while(1)
 		{
@@ -379,16 +374,11 @@ int fullTest(unsigned char *srcbuf, int w, int h, int subsamp, int jpegqual,
 					totaljpegsize+=jpegsize[tile];
 				}
 			}
-			elapsed+=gettime()-start;
-			if(iter>=0)
+			iter++;
+			if(iter>=1)
 			{
-				iter++;
+				elapsed+=gettime()-start;
 				if(elapsed>=benchtime) break;
-			}
-			else if(elapsed>=warmup)
-			{
-				iter=0;
-				elapsed=elapsedEncode=0.;
 			}
 		}
 		if(doyuv) elapsed-=elapsedEncode;
@@ -633,7 +623,7 @@ int decompTest(char *filename)
 				}
 			}
 
-			iter=-1;
+			iter=-warmup;
 			elapsed=0.;
 			while(1)
 			{
@@ -641,16 +631,11 @@ int decompTest(char *filename)
 				if(tjTransform(handle, srcbuf, srcsize, _ntilesw*_ntilesh, jpegbuf,
 					jpegsize, t, flags)==-1)
 					_throwtj("executing tjTransform()");
-				elapsed+=gettime()-start;
-				if(iter>=0)
+				iter++;
+				if(iter>=1)
 				{
-					iter++;
+					elapsed+=gettime()-start;
 					if(elapsed>=benchtime) break;
-				}
-				else if(elapsed>=warmup)
-				{
-					iter=0;
-					elapsed=0.;
 				}
 			}
 
@@ -683,9 +668,7 @@ int decompTest(char *filename)
 		{
 			if(quiet==1) printf("N/A     N/A     ");
 			jpegsize[0]=srcsize;
-			free(jpegbuf[0]);
-			jpegbuf[0]=srcbuf;
-			srcbuf=NULL;
+			memcpy(jpegbuf[0], srcbuf, srcsize);
 		}
 
 		if(w==tilew) _tilew=_w;
@@ -780,9 +763,8 @@ void usage(char *progname)
 	printf("-grayscale = Perform lossless grayscale conversion prior to decompression\n");
 	printf("     test (can be combined with the other transforms above)\n");
 	printf("-benchtime <t> = Run each benchmark for at least <t> seconds (default = 5.0)\n");
-	printf("-warmup <t> = Run each benchmark for <t> seconds (default = 1.0) prior to\n");
-	printf("     starting the timer, in order to prime the caches and thus improve the\n");
-	printf("     consistency of the results.\n");
+	printf("-warmup <w> = Execute each benchmark <w> times to prime the cache before\n");
+	printf("     taking performance measurements (default = 1)\n");
 	printf("-componly = Stop after running compression tests.  Do not test decompression.\n");
 	printf("-nowrite = Do not write reference or output images (improves consistency of\n");
 	printf("     performance measurements.)\n\n");
@@ -896,10 +878,13 @@ int main(int argc, char *argv[])
 			}
 			if(!strcasecmp(argv[i], "-warmup") && i<argc-1)
 			{
-				double temp=atof(argv[++i]);
-				if(temp>=0.0) warmup=temp;
+				int temp=atoi(argv[++i]);
+				if(temp>=0)
+				{
+					warmup=temp;
+					printf("Warmup runs = %d\n\n", warmup);
+				}
 				else usage(argv[0]);
-				printf("Warmup time = %.1f seconds\n\n", warmup);
 			}
 			if(!strcmp(argv[i], "-?")) usage(argv[0]);
 			if(!strcasecmp(argv[i], "-alloc")) flags&=(~TJFLAG_NOREALLOC);
